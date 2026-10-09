@@ -1,6 +1,8 @@
 :root {
   --primary: #0056b3;
   --primary-hover: #003d80;
+  --secondary: #4a5568;
+  --secondary-hover: #2d3748;
   --danger: #d9534f;
   --danger-hover: #c9302c;
   --bg-color: #f4f6f8;
@@ -169,7 +171,9 @@ body {
 
 /* Buttons */
 .btn {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 48px; /* Touch-friendly button size */
   padding: 0.75rem 1.25rem;
   font-size: 1rem;
@@ -179,6 +183,7 @@ body {
   border-radius: 8px;
   cursor: pointer;
   touch-action: manipulation;
+  text-decoration: none;
 }
 
 .btn-block {
@@ -194,6 +199,25 @@ body {
   background-color: var(--primary-hover);
 }
 
+.btn-secondary {
+  background-color: var(--secondary);
+  color: #ffffff;
+}
+
+.btn-secondary:active {
+  background-color: var(--secondary-hover);
+}
+
+.btn-outline {
+  background-color: transparent;
+  color: var(--primary);
+  border: 1.5px solid var(--primary);
+}
+
+.btn-outline:active {
+  background-color: #eef5fc;
+}
+
 .btn-delete {
   background-color: transparent;
   color: var(--danger);
@@ -207,6 +231,42 @@ body {
 .btn-delete:active {
   background-color: var(--danger);
   color: #ffffff;
+}
+
+.file-input-label {
+  margin: 0;
+  box-sizing: border-box;
+}
+
+/* Backup Card Styling */
+.backup-info {
+  margin-bottom: 0.75rem;
+  color: var(--text-muted);
+}
+
+.backup-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.backup-msg {
+  padding: 0.6rem 0.85rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  margin-bottom: 0.85rem;
+}
+
+.backup-msg.success-msg {
+  background-color: #d1e7dd;
+  color: #0f5132;
+  border: 1px solid #badbcc;
+}
+
+.backup-msg.error-msg {
+  background-color: #f8d7da;
+  color: #842029;
+  border: 1px solid #f5c2c7;
 }
 
 /* Filter Section */
@@ -293,6 +353,10 @@ body {
 /* Media Queries for Desktop layout */
 @media (min-width: 480px) {
   .filter-controls {
+    flex-direction: row;
+  }
+
+  .backup-actions {
     flex-direction: row;
   }
 }

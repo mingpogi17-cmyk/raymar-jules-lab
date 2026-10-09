@@ -109,6 +109,22 @@
         <ul id="expenseList" class="expense-list"></ul>
       </div>
     </section>
+
+    <!-- Phase 1: Data Backup & Restore Section -->
+    <section class="card backup-card">
+      <h2>Backup & Restore Data</h2>
+      <p class="backup-info"><small>Export your records as a JSON backup file or restore previously saved records.</small></p>
+
+      <div id="backupMessage" class="backup-msg" style="display: none;"></div>
+
+      <div class="backup-actions">
+        <button id="exportBackupBtn" type="button" class="btn btn-secondary btn-block">Export Backup (JSON)</button>
+        <label for="importBackupInput" class="btn btn-outline btn-block file-input-label">
+          Import / Restore Backup (JSON)
+          <input type="file" id="importBackupInput" accept=".json,application/json" style="display: none;">
+        </label>
+      </div>
+    </section>
   </main>
 
   <footer class="app-footer">

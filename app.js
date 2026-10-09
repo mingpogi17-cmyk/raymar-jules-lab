@@ -27,7 +27,6 @@ function getLocalDateString(d = new Date()) {
 }
 
 // Load expenses from storage safely
-// Avoid resolving `localStorage` in default parameter where a getter error could occur before try/catch
 function getExpenses(customStorage) {
   try {
     const storage = customStorage !== undefined ? customStorage : (typeof localStorage !== 'undefined' ? localStorage : null);
@@ -188,6 +187,70 @@ function escapeHTML(str) {
   );
 }
 
+// --- PHASE 1: JSON BACKUP & RESTORE HELPERS ---
+
+// Validate imported JSON data structure and every expense record inside
+function validateBackupData(parsedData) {
+  if (!parsedData) {
+    return { isValid: false, error: 'Ang backup file ay blangko (File is empty).' };
+  }
+
+  let records = parsedData;
+  // Support both raw array and metadata container object { version: 1, expenses: [...] }
+  if (!Array.isArray(parsedData) && typeof parsedData === 'object' && Array.isArray(parsedData.expenses)) {
+    records = parsedData.expenses;
+  }
+
+  if (!Array.isArray(records)) {
+    return { isValid: false, error: 'Hindi valid na backup format (Backup must be an array or valid backup object).' };
+  }
+
+  const validRecords = [];
+  for (let i = 0; i < records.length; i++) {
+    const item = records[i];
+    if (!item || typeof item !== 'object') {
+      return { isValid: false, error: `Ang record #${i + 1} ay hindi valid object.` };
+    }
+
+    const { date, amount, category, merchant, description, id } = item;
+    const { isValid, errors } = validateExpenseInput({ date, amount, category, merchant });
+
+    if (!isValid) {
+      const firstErrKey = Object.keys(errors)[0];
+      return {
+        isValid: false,
+        error: `May maling data sa record #${i + 1} (${merchant || 'Unknown'}): ${errors[firstErrKey]}`
+      };
+    }
+
+    validRecords.push({
+      id: (id && typeof id === 'string' && id.trim() !== '') ? id.trim() : 'exp_' + Date.now() + '_' + i,
+      date: String(date).trim(),
+      amount: Number(amount),
+      category: String(category).trim(),
+      merchant: String(merchant).trim(),
+      description: description ? String(description).trim() : ''
+    });
+  }
+
+  return {
+    isValid: true,
+    data: validRecords
+  };
+}
+
+// Generate formatted JSON string for backup export
+function generateBackupJSON(expenses) {
+  const exportPayload = {
+    appName: 'Ray Mar Apps Business Expense Tracker',
+    version: '1.0',
+    exportDate: new Date().toISOString(),
+    totalRecords: Array.isArray(expenses) ? expenses.length : 0,
+    expenses: Array.isArray(expenses) ? expenses : []
+  };
+  return JSON.stringify(exportPayload, null, 2);
+}
+
 // UI Controller (Only runs in browser DOM environment)
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', () => {
@@ -213,6 +276,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const searchInput = document.getElementById('searchInput');
     const filterCategory = document.getElementById('filterCategory');
 
+    // Backup & Restore DOM Elements
+    const exportBackupBtn = document.getElementById('exportBackupBtn');
+    const importBackupInput = document.getElementById('importBackupInput');
+    const backupMessage = document.getElementById('backupMessage');
+
     // Set default date to user's local date
     if (expenseDate) {
       expenseDate.value = getLocalDateString();
@@ -223,6 +291,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (amountError) amountError.textContent = '';
       if (categoryError) categoryError.textContent = '';
       if (merchantError) merchantError.textContent = '';
+      if (backupMessage) {
+        backupMessage.textContent = '';
+        backupMessage.style.display = 'none';
+        backupMessage.className = 'backup-msg';
+      }
       if (storageAlert) {
         storageAlert.textContent = '';
         storageAlert.style.display = 'none';
@@ -233,6 +306,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (storageAlert) {
         storageAlert.textContent = message;
         storageAlert.style.display = 'block';
+      } else {
+        alert(message);
+      }
+    }
+
+    function showBackupStatus(message, isSuccess = false) {
+      if (backupMessage) {
+        backupMessage.textContent = message;
+        backupMessage.style.display = 'block';
+        backupMessage.className = isSuccess ? 'backup-msg success-msg' : 'backup-msg error-msg';
       } else {
         alert(message);
       }
@@ -304,6 +387,96 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           });
         }
       }
+    }
+
+    // Export Backup Handler
+    if (exportBackupBtn) {
+      exportBackupBtn.addEventListener('click', () => {
+        clearErrors();
+        const loadRes = getExpenses();
+        if (!loadRes.success) {
+          showBackupStatus('Hindi ma-export ang data dahil sa storage error.');
+          return;
+        }
+
+        const expenses = loadRes.data || [];
+        if (expenses.length === 0) {
+          showBackupStatus('Walang ire-record na gastos para i-export (No records to export).');
+          return;
+        }
+
+        const jsonString = generateBackupJSON(expenses);
+        const blob = new Blob([jsonString], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `raymar_expenses_backup_${getLocalDateString()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        showBackupStatus(`Matagumpay na na-export ang ${expenses.length} records bilang JSON backup file!`, true);
+      });
+    }
+
+    // Import/Restore Backup Handler
+    if (importBackupInput) {
+      importBackupInput.addEventListener('change', (e) => {
+        clearErrors();
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const fileContent = event.target.result;
+            let parsedJSON;
+            try {
+              parsedJSON = JSON.parse(fileContent);
+            } catch (err) {
+              showBackupStatus('Hindi mabasa ang file. Ang file ay hindi valid na JSON string.');
+              importBackupInput.value = '';
+              return;
+            }
+
+            const { isValid, data: validatedRecords, error } = validateBackupData(parsedJSON);
+            if (!isValid) {
+              showBackupStatus(`Import error: ${error}`);
+              importBackupInput.value = '';
+              return;
+            }
+
+            const currentLoad = getExpenses();
+            const currentCount = (currentLoad.success && currentLoad.data) ? currentLoad.data.length : 0;
+            const confirmMsg = `Sigurado ka bang gusto mong palitan ang ${currentCount} kasalukuyang records gamit ang ${validatedRecords.length} records mula sa backup?`;
+
+            if (confirm(confirmMsg)) {
+              const saveRes = saveExpenses(validatedRecords);
+              if (!saveRes.success) {
+                showBackupStatus(`Hindi ma-save ang na-import na backup: ${saveRes.error}`);
+                importBackupInput.value = '';
+                return;
+              }
+
+              showBackupStatus(`Matagumpay na na-restore ang ${validatedRecords.length} records!`, true);
+              renderUI();
+            }
+          } catch (err) {
+            console.error('Error during backup import:', err);
+            showBackupStatus('Nagka-error sa pag-process ng backup file.');
+          } finally {
+            importBackupInput.value = '';
+          }
+        };
+
+        reader.onerror = () => {
+          showBackupStatus('Hindi ma-read ang napiling file.');
+          importBackupInput.value = '';
+        };
+
+        reader.readAsText(file);
+      });
     }
 
     // Form submit event
@@ -409,6 +582,8 @@ if (typeof module !== 'undefined' && module.exports) {
     validateExpenseInput,
     calculateTotals,
     filterExpensesList,
-    escapeHTML
+    escapeHTML,
+    validateBackupData,
+    generateBackupJSON
   };
 }

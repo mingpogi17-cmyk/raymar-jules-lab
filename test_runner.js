@@ -10,7 +10,9 @@ const {
   validateExpenseInput,
   calculateTotals,
   filterExpensesList,
-  escapeHTML
+  escapeHTML,
+  validateBackupData,
+  generateBackupJSON
 } = require('./app.js');
 
 console.log('Running Ray Mar Apps Business Expense Tracker Comprehensive Unit Tests...\n');
@@ -117,7 +119,7 @@ const loadFailResult = getExpenses(failingReadStorage);
 assert.strictEqual(loadFailResult.success, false);
 assert.ok(loadFailResult.error, 'Should contain error message when read fails');
 
-// 4e. Storage Object Getter Exception Simulation (SecurityError when accessing localStorage object itself)
+// 4e. Storage Object Getter Exception Simulation
 const throwingGetterStorage = {
   get getItem() {
     throw new Error('SecurityError: Access to localStorage is denied');
@@ -177,6 +179,56 @@ assert.strictEqual(filtered.length, 2, 'Filtering ignores non-object items clean
 
 console.log('✓ Passed: Totals calculation and filtering ignore non-object items and safely categorize legacy/unknown inputs.');
 
+// Test 8: Phase 1 JSON Backup & Restore Validation Suite
+console.log('\nTest 8: Phase 1 JSON Backup & Restore Validation');
+
+// 8a. Valid Backup Export Generation & Parsing
+const mockBackupExpenses = [
+  { id: 'exp_1', date: '2025-02-17', amount: 1500, category: 'Utilities', merchant: 'Meralco', description: 'Electric bill' },
+  { id: 'exp_2', date: '2025-02-18', amount: 350, category: 'Supplies', merchant: 'National Book Store', description: 'Paper' }
+];
+
+const generatedJSON = generateBackupJSON(mockBackupExpenses);
+assert.ok(generatedJSON.includes('Ray Mar Apps Business Expense Tracker'));
+assert.ok(generatedJSON.includes('Meralco'));
+
+const parseExportRes = validateBackupData(JSON.parse(generatedJSON));
+assert.strictEqual(parseExportRes.isValid, true);
+assert.strictEqual(parseExportRes.data.length, 2);
+assert.strictEqual(parseExportRes.data[0].merchant, 'Meralco');
+
+// 8b. Valid Raw Array Backup
+const parseRawArrayRes = validateBackupData(mockBackupExpenses);
+assert.strictEqual(parseRawArrayRes.isValid, true);
+assert.strictEqual(parseRawArrayRes.data.length, 2);
+
+// 8c. Invalid / Malformed Backup Files
+assert.strictEqual(validateBackupData(null).isValid, false);
+assert.strictEqual(validateBackupData('not_an_object').isValid, false);
+assert.strictEqual(validateBackupData({ expenses: 'not_an_array' }).isValid, false);
+
+// 8d. Backup file with invalid expense record (e.g. negative amount, invalid date)
+const invalidRecordBackup = [
+  { id: 'exp_1', date: '2025-02-17', amount: 1500, category: 'Utilities', merchant: 'Meralco' },
+  { id: 'exp_2', date: '2025-02-31', amount: 500, category: 'Supplies', merchant: 'Store' } // Invalid date Feb 31
+];
+const invalidRecordRes = validateBackupData(invalidRecordBackup);
+assert.strictEqual(invalidRecordRes.isValid, false);
+assert.ok(invalidRecordRes.error.includes('May maling data sa record #2'));
+
+const negativeAmountBackup = [
+  { id: 'exp_1', date: '2025-02-17', amount: -100, category: 'Utilities', merchant: 'Meralco' }
+];
+assert.strictEqual(validateBackupData(negativeAmountBackup).isValid, false);
+
+// 8e. Storage Failure Handling during Restore
+const storageFailMock = createMockStorage(null, false, true); // Save fails
+const restoreAttemptSave = saveExpenses(parseExportRes.data, storageFailMock);
+assert.strictEqual(restoreAttemptSave.success, false);
+assert.ok(restoreAttemptSave.error.includes('Hindi ma-save ang data sa storage'));
+
+console.log('✓ Passed: Backup validation accepts valid JSON arrays/objects, rejects invalid records/dates, and handles storage errors safely.');
+
 console.log('\n======================================================');
-console.log('ALL 7 TEST SUITES PASSED SUCCESSFULLY (0 FAILURES)! 🎉');
+console.log('ALL 8 TEST SUITES PASSED SUCCESSFULLY (0 FAILURES)! 🎉');
 console.log('======================================================\n');
