@@ -26,15 +26,31 @@ function getLocalDateString(d = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
-// Load expenses from localStorage
+// Load expenses from localStorage and strictly ensure Array type
 function getExpenses(storage = typeof localStorage !== 'undefined' ? localStorage : null) {
   if (!storage) return { success: true, data: [] };
   try {
-    const data = storage.getItem(STORAGE_KEY);
-    return { success: true, data: data ? JSON.parse(data) : [] };
+    const rawData = storage.getItem(STORAGE_KEY);
+    if (rawData === null || rawData === undefined) {
+      return { success: true, data: [] };
+    }
+    const parsed = JSON.parse(rawData);
+    if (!Array.isArray(parsed)) {
+      console.error('Stored data is valid JSON but not an Array:', parsed);
+      return {
+        success: false,
+        data: [],
+        error: 'Hindi valid na talaan ng gastos ang nakasave sa storage (Invalid data format).'
+      };
+    }
+    return { success: true, data: parsed };
   } catch (e) {
     console.error('Failed to parse expenses from localStorage:', e);
-    return { success: false, data: [], error: 'Hindi mabasa ang nakagawiang data sa storage.' };
+    return {
+      success: false,
+      data: [],
+      error: 'Hindi mabasa ang nakagawiang data sa storage (Malformed JSON).'
+    };
   }
 }
 
@@ -108,7 +124,7 @@ function validateExpenseInput({ date, amount, category, merchant }) {
   };
 }
 
-// Calculate totals safely
+// Calculate totals safely against non-array or malformed item objects
 function calculateTotals(expenses) {
   let total = 0;
   const categories = {
@@ -122,13 +138,16 @@ function calculateTotals(expenses) {
 
   if (Array.isArray(expenses)) {
     expenses.forEach(item => {
-      const amt = Number(item.amount);
-      if (!isNaN(amt) && isFinite(amt) && amt > 0) {
-        total += amt;
-        if (categories.hasOwnProperty(item.category)) {
-          categories[item.category] += amt;
-        } else {
-          categories.Others += amt;
+      if (item && typeof item === 'object') {
+        const amt = Number(item.amount);
+        if (!isNaN(amt) && isFinite(amt) && amt > 0) {
+          total += amt;
+          const cat = (item.category || '').toString().trim();
+          if (categories.hasOwnProperty(cat)) {
+            categories[cat] += amt;
+          } else {
+            categories.Others += amt;
+          }
         }
       }
     });
@@ -137,7 +156,7 @@ function calculateTotals(expenses) {
   return { total, categories };
 }
 
-// Filter expenses logic
+// Filter expenses logic safely
 function filterExpensesList(expenses, searchKeyword, categoryFilter) {
   if (!Array.isArray(expenses)) return [];
   const safeKeyword = (searchKeyword || '').toString().toLowerCase().trim();
@@ -188,7 +207,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const filterCategory = document.getElementById('filterCategory');
 
     // Set default date to user's local date
-    expenseDate.value = getLocalDateString();
+    if (expenseDate) {
+      expenseDate.value = getLocalDateString();
+    }
 
     function clearErrors() {
       if (dateError) dateError.textContent = '';
@@ -246,16 +267,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         } else {
           emptyStateEl.style.display = 'none';
           filtered.forEach(item => {
+            if (!item || typeof item !== 'object') return;
             const li = document.createElement('li');
             li.className = 'expense-item';
             li.innerHTML = `
               <div class="expense-details">
-                <span class="expense-title">${escapeHTML(item.merchant)}</span>
-                <span class="expense-meta">${escapeHTML(item.date)} • <strong class="text-primary">${escapeHTML(item.category)}</strong>${item.description ? ' • ' + escapeHTML(item.description) : ''}</span>
+                <span class="expense-title">${escapeHTML(item.merchant || 'Unknown Merchant')}</span>
+                <span class="expense-meta">${escapeHTML(item.date || '')} • <strong class="text-primary">${escapeHTML(item.category || 'Others')}</strong>${item.description ? ' • ' + escapeHTML(item.description) : ''}</span>
               </div>
               <div class="expense-right">
                 <span class="expense-amount-tag">${formatPHP(item.amount)}</span>
-                <button class="btn btn-delete" data-id="${escapeHTML(item.id)}" aria-label="Delete expense">Delete</button>
+                <button class="btn btn-delete" data-id="${escapeHTML(item.id || '')}" aria-label="Delete expense">Delete</button>
               </div>
             `;
             expenseListEl.appendChild(li);
@@ -333,7 +355,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             return;
           }
           let expenses = loadRes.data;
-          expenses = expenses.filter(item => item.id !== idToDelete);
+          expenses = expenses.filter(item => item && item.id !== idToDelete);
 
           const saveRes = saveExpenses(expenses);
           if (!saveRes.success) {

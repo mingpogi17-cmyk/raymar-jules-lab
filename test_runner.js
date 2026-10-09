@@ -15,13 +15,16 @@ const {
 
 console.log('Running Ray Mar Apps Business Expense Tracker Comprehensive Unit Tests...\n');
 
-// Mock localStorage implementation
-function createMockStorage(shouldFailGet = false, shouldFailSet = false) {
+// Mock localStorage implementation with custom return value / exception capability
+function createMockStorage(initialValue = null, shouldFailGet = false, shouldFailSet = false) {
   let store = {};
+  if (initialValue !== null && initialValue !== undefined) {
+    store['raymar_expenses_v1'] = initialValue;
+  }
   return {
     getItem: (key) => {
       if (shouldFailGet) throw new Error('Simulated Read Error');
-      return store[key] || null;
+      return store[key] !== undefined ? store[key] : null;
     },
     setItem: (key, val) => {
       if (shouldFailSet) throw new Error('Simulated Write Error / Quota Exceeded');
@@ -70,27 +73,51 @@ assert.strictEqual(unapprovedRes.isValid, false);
 assert.ok(unapprovedRes.errors.category, 'Unapproved category must return error');
 console.log('✓ Passed: Only approved categories are accepted.');
 
-// Test 4: LocalStorage Read/Write Handling
-console.log('\nTest 4: Storage Error Handling');
-const normalStorage = createMockStorage();
-const saveResult = saveExpenses([{ id: '1', amount: 100 }], normalStorage);
-assert.strictEqual(saveResult.success, true);
+// Test 4: LocalStorage Hardening (Non-Array JSON, Malformed JSON, Empty Storage, Storage Errors)
+console.log('\nTest 4: Storage Hardening & Error Handling');
 
-const loadResult = getExpenses(normalStorage);
-assert.strictEqual(loadResult.success, true);
-assert.strictEqual(loadResult.data.length, 1);
+// 4a. Empty Storage
+const emptyStorage = createMockStorage(null);
+const emptyLoad = getExpenses(emptyStorage);
+assert.strictEqual(emptyLoad.success, true);
+assert.deepStrictEqual(emptyLoad.data, []);
 
-// Test Failures
-const failingWriteStorage = createMockStorage(false, true);
+// 4b. Valid JSON but NOT an Array (Object, Number, String, Null)
+const objectStorage = createMockStorage(JSON.stringify({ key: 'value' }));
+const objectLoad = getExpenses(objectStorage);
+assert.strictEqual(objectLoad.success, false);
+assert.ok(objectLoad.error.includes('Invalid data format'));
+
+const numberStorage = createMockStorage(JSON.stringify(12345));
+const numberLoad = getExpenses(numberStorage);
+assert.strictEqual(numberLoad.success, false);
+
+const stringStorage = createMockStorage(JSON.stringify('hello world'));
+const stringLoad = getExpenses(stringStorage);
+assert.strictEqual(stringLoad.success, false);
+
+const nullJSONStorage = createMockStorage(JSON.stringify(null));
+const nullJSONLoad = getExpenses(nullJSONStorage);
+assert.strictEqual(nullJSONLoad.success, false);
+
+// 4c. Malformed JSON string
+const malformedStorage = createMockStorage('{ bad json syntax: ');
+const malformedLoad = getExpenses(malformedStorage);
+assert.strictEqual(malformedLoad.success, false);
+assert.ok(malformedLoad.error.includes('Malformed JSON'));
+
+// 4d. Storage Read / Write Exceptions
+const failingWriteStorage = createMockStorage(null, false, true);
 const saveFailResult = saveExpenses([{ id: '1', amount: 100 }], failingWriteStorage);
 assert.strictEqual(saveFailResult.success, false);
 assert.ok(saveFailResult.error, 'Should contain error message when write fails');
 
-const failingReadStorage = createMockStorage(true, false);
+const failingReadStorage = createMockStorage(null, true, false);
 const loadFailResult = getExpenses(failingReadStorage);
 assert.strictEqual(loadFailResult.success, false);
 assert.ok(loadFailResult.error, 'Should contain error message when read fails');
-console.log('✓ Passed: Storage read/write failures are handled gracefully without silent false successes.');
+
+console.log('✓ Passed: Storage rejects non-array JSON (object, string, number, null), malformed JSON, and exception errors.');
 
 // Test 5: Local Date Formatting
 console.log('\nTest 5: Local Date Formatting');
@@ -104,7 +131,7 @@ assert.strictEqual(escapeHTML('<script>alert("xss")</script>'), '&lt;script&gt;a
 assert.strictEqual(escapeHTML("Merchant's Store & Shop"), 'Merchant&#39;s Store &amp; Shop');
 console.log('✓ Passed: HTML special characters are escaped safely.');
 
-// Test 7: Currency Formatting & Totals Calculation
+// Test 7: Currency Formatting & Totals Calculation Safeguards
 console.log('\nTest 7: Currency Formatting & Calculation Safeguards');
 assert.strictEqual(formatPHP(1250.5), '₱1,250.50');
 assert.strictEqual(formatPHP('invalid'), '₱0.00');
@@ -113,12 +140,16 @@ const totals = calculateTotals([
   { amount: 1000, category: 'Utilities' },
   { amount: 'invalid', category: 'Rent' },
   { amount: -500, category: 'Supplies' },
-  { amount: 500, category: 'Supplies' }
+  { amount: 500, category: 'Supplies' },
+  null,
+  'string_item',
+  { amount: 200, category: 'UnknownCategory' }
 ]);
-assert.strictEqual(totals.total, 1500, 'Invalid and negative amounts should be ignored in total');
+assert.strictEqual(totals.total, 1700, 'Invalid, negative, non-object items should be handled safely');
 assert.strictEqual(totals.categories.Utilities, 1000);
 assert.strictEqual(totals.categories.Supplies, 500);
-console.log('✓ Passed: Totals calculation ignores malformed and negative data.');
+assert.strictEqual(totals.categories.Others, 200, 'Unknown categories accumulate under Others');
+console.log('✓ Passed: Totals calculation ignores non-object items and safely categorizes legacy/unknown inputs.');
 
 console.log('\n======================================================');
 console.log('ALL 7 TEST SUITES PASSED SUCCESSFULLY (0 FAILURES)! 🎉');
