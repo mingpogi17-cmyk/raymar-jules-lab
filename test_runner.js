@@ -1,6 +1,8 @@
 const assert = require('assert');
 const {
   APPROVED_CATEGORIES,
+  SUPPORTED_BACKUP_VERSION,
+  APP_NAME_IDENTIFIER,
   formatPHP,
   getLocalDateString,
   getExpenses,
@@ -12,7 +14,8 @@ const {
   filterExpensesList,
   escapeHTML,
   validateBackupData,
-  generateBackupJSON
+  generateBackupJSON,
+  restoreBackup
 } = require('./app.js');
 
 console.log('Running Ray Mar Apps Business Expense Tracker Comprehensive Unit Tests...\n');
@@ -21,7 +24,7 @@ console.log('Running Ray Mar Apps Business Expense Tracker Comprehensive Unit Te
 function createMockStorage(initialValue = null, shouldFailGet = false, shouldFailSet = false) {
   let store = {};
   if (initialValue !== null && initialValue !== undefined) {
-    store['raymar_expenses_v1'] = initialValue;
+    store['raymar_expenses_v1'] = typeof initialValue === 'string' ? initialValue : JSON.stringify(initialValue);
   }
   return {
     getItem: (key) => {
@@ -179,55 +182,125 @@ assert.strictEqual(filtered.length, 2, 'Filtering ignores non-object items clean
 
 console.log('✓ Passed: Totals calculation and filtering ignore non-object items and safely categorize legacy/unknown inputs.');
 
-// Test 8: Phase 1 JSON Backup & Restore Validation Suite
-console.log('\nTest 8: Phase 1 JSON Backup & Restore Validation');
+// Test 8: Comprehensive JSON Backup & Restore Suite (All 12 Scenarios)
+console.log('\nTest 8: Comprehensive JSON Backup & Restore Workflow Suite (12 Scenarios)');
 
-// 8a. Valid Backup Export Generation & Parsing
-const mockBackupExpenses = [
-  { id: 'exp_1', date: '2025-02-17', amount: 1500, category: 'Utilities', merchant: 'Meralco', description: 'Electric bill' },
-  { id: 'exp_2', date: '2025-02-18', amount: 350, category: 'Supplies', merchant: 'National Book Store', description: 'Paper' }
+// Scenario 8.1: Correct export envelope format, version, timestamp, and records
+const sampleRecords = [
+  { id: 'exp_1', date: '2025-02-17', amount: 1250.50, category: 'Utilities', merchant: 'Meralco', description: 'Electric bill' },
+  { id: 'exp_2', date: '2025-02-18', amount: 500, category: 'Supplies', merchant: 'Office Warehouse', description: 'Paper' }
 ];
 
-const generatedJSON = generateBackupJSON(mockBackupExpenses);
-assert.ok(generatedJSON.includes('Ray Mar Apps Business Expense Tracker'));
-assert.ok(generatedJSON.includes('Meralco'));
+const exportPayloadStr = generateBackupJSON(sampleRecords);
+const exportPayloadObj = JSON.parse(exportPayloadStr);
+assert.strictEqual(exportPayloadObj.appName, APP_NAME_IDENTIFIER);
+assert.strictEqual(exportPayloadObj.version, SUPPORTED_BACKUP_VERSION);
+assert.ok(!isNaN(Date.parse(exportPayloadObj.exportDate)));
+assert.strictEqual(exportPayloadObj.totalRecords, 2);
+assert.strictEqual(exportPayloadObj.expenses.length, 2);
+console.log('  ✓ 8.1: Exported backup contains correct envelope identifier, version, timestamp, and records.');
 
-const parseExportRes = validateBackupData(JSON.parse(generatedJSON));
-assert.strictEqual(parseExportRes.isValid, true);
-assert.strictEqual(parseExportRes.data.length, 2);
-assert.strictEqual(parseExportRes.data[0].merchant, 'Meralco');
+// Scenario 8.2: Empty expense list export
+const emptyExportStr = generateBackupJSON([]);
+const emptyExportObj = JSON.parse(emptyExportStr);
+assert.strictEqual(emptyExportObj.totalRecords, 0);
+assert.deepStrictEqual(emptyExportObj.expenses, []);
+console.log('  ✓ 8.2: Empty expense lists export correctly as valid empty backup document.');
 
-// 8b. Valid Raw Array Backup
-const parseRawArrayRes = validateBackupData(mockBackupExpenses);
-assert.strictEqual(parseRawArrayRes.isValid, true);
-assert.strictEqual(parseRawArrayRes.data.length, 2);
+// Scenario 8.3: Successful restore and preservation of all valid records
+const testStorageForRestore = createMockStorage([
+  { id: 'old_1', date: '2025-01-01', amount: 100, category: 'Others', merchant: 'Old Store', description: '' }
+]);
+const validBackupObj = JSON.parse(generateBackupJSON(sampleRecords));
+const validValidationRes = validateBackupData(validBackupObj);
+assert.strictEqual(validValidationRes.isValid, true);
 
-// 8c. Invalid / Malformed Backup Files
+const restoreRes = restoreBackup(validValidationRes.data, testStorageForRestore, () => true);
+assert.strictEqual(restoreRes.success, true);
+assert.strictEqual(restoreRes.restoredCount, 2);
+
+const postRestoreLoad = getExpenses(testStorageForRestore);
+assert.strictEqual(postRestoreLoad.data.length, 2);
+assert.strictEqual(postRestoreLoad.data[0].merchant, 'Meralco');
+assert.strictEqual(postRestoreLoad.data[1].merchant, 'Office Warehouse');
+console.log('  ✓ 8.3: Valid backup restores all records cleanly to storage.');
+
+// Scenario 8.4: Restored records preserve expected fields and values
+assert.strictEqual(postRestoreLoad.data[0].id, 'exp_1');
+assert.strictEqual(postRestoreLoad.data[0].date, '2025-02-17');
+assert.strictEqual(postRestoreLoad.data[0].amount, 1250.50);
+assert.strictEqual(postRestoreLoad.data[0].category, 'Utilities');
+assert.strictEqual(postRestoreLoad.data[0].description, 'Electric bill');
+console.log('  ✓ 8.4: Restored records preserve all expected fields and values accurately.');
+
+// Scenario 8.5: Raw array backup rejection
+const rawArrayBackup = sampleRecords;
+const rawArrayRes = validateBackupData(rawArrayBackup);
+assert.strictEqual(rawArrayRes.isValid, false);
+assert.ok(rawArrayRes.error.includes('raw array'));
+console.log('  ✓ 8.5: Raw array backups are rejected in favor of versioned envelopes.');
+
+// Scenario 8.6: Malformed JSON and unexpected document structures rejected
 assert.strictEqual(validateBackupData(null).isValid, false);
-assert.strictEqual(validateBackupData('not_an_object').isValid, false);
-assert.strictEqual(validateBackupData({ expenses: 'not_an_array' }).isValid, false);
+assert.strictEqual(validateBackupData("string_doc").isValid, false);
+assert.strictEqual(validateBackupData(12345).isValid, false);
+assert.strictEqual(validateBackupData({ randomKey: 'val' }).isValid, false);
+console.log('  ✓ 8.6: Malformed JSON and unexpected document structures are rejected.');
 
-// 8d. Backup file with invalid expense record (e.g. negative amount, invalid date)
-const invalidRecordBackup = [
-  { id: 'exp_1', date: '2025-02-17', amount: 1500, category: 'Utilities', merchant: 'Meralco' },
-  { id: 'exp_2', date: '2025-02-31', amount: 500, category: 'Supplies', merchant: 'Store' } // Invalid date Feb 31
-];
+// Scenario 8.7: Unsupported backup version rejection
+const badVersionBackup = { ...validBackupObj, version: '2.0' };
+const badVersionRes = validateBackupData(badVersionBackup);
+assert.strictEqual(badVersionRes.isValid, false);
+assert.ok(badVersionRes.error.includes('Hindi suportadong backup version'));
+console.log('  ✓ 8.7: Unsupported backup versions are rejected.');
+
+// Scenario 8.8: Missing fields, invalid field types, and invalid expense records rejected
+const invalidRecordBackup = {
+  ...validBackupObj,
+  expenses: [
+    { id: 'exp_1', date: '2025-02-17', amount: 1500, category: 'Utilities', merchant: 'Meralco' },
+    { id: 'exp_2', date: '2025-02-31', amount: 500, category: 'Supplies', merchant: 'Store' } // Invalid date Feb 31
+  ]
+};
 const invalidRecordRes = validateBackupData(invalidRecordBackup);
 assert.strictEqual(invalidRecordRes.isValid, false);
 assert.ok(invalidRecordRes.error.includes('May maling data sa record #2'));
+console.log('  ✓ 8.8: Missing required fields or invalid record field values are rejected.');
 
-const negativeAmountBackup = [
-  { id: 'exp_1', date: '2025-02-17', amount: -100, category: 'Utilities', merchant: 'Meralco' }
-];
-assert.strictEqual(validateBackupData(negativeAmountBackup).isValid, false);
+// Scenario 8.9: Single invalid record rejects ENTIRE backup without partial import
+const partialAttemptStorage = createMockStorage([]);
+const partialAttemptValidation = validateBackupData(invalidRecordBackup);
+assert.strictEqual(partialAttemptValidation.isValid, false);
+// Since validation failed before restore, no records are updated
+const partialCheck = getExpenses(partialAttemptStorage);
+assert.strictEqual(partialCheck.data.length, 0, 'No partial records should be imported when one record is invalid');
+console.log('  ✓ 8.9: A single invalid record rejects the entire backup without partial restoration.');
 
-// 8e. Storage Failure Handling during Restore
-const storageFailMock = createMockStorage(null, false, true); // Save fails
-const restoreAttemptSave = saveExpenses(parseExportRes.data, storageFailMock);
-assert.strictEqual(restoreAttemptSave.success, false);
-assert.ok(restoreAttemptSave.error.includes('Hindi ma-save ang data sa storage'));
+// Scenario 8.10: Cancelled restore leaves existing records unchanged
+const cancelStorage = createMockStorage(sampleRecords);
+const cancelRestoreRes = restoreBackup(validValidationRes.data, cancelStorage, () => false); // User clicks Cancel
+assert.strictEqual(cancelRestoreRes.cancelled, true);
 
-console.log('✓ Passed: Backup validation accepts valid JSON arrays/objects, rejects invalid records/dates, and handles storage errors safely.');
+const cancelCheckLoad = getExpenses(cancelStorage);
+assert.strictEqual(cancelCheckLoad.data.length, 2, 'Existing data remains untouched when user cancels');
+console.log('  ✓ 8.10: Cancelled restore leaves existing storage records completely unchanged.');
+
+// Scenario 8.11: Invalid backup leaves existing data unchanged
+const invalidAttemptStorage = createMockStorage(sampleRecords);
+const invalidBackupToAttempt = { appName: 'BadApp' };
+const invalidValRes = validateBackupData(invalidBackupToAttempt);
+assert.strictEqual(invalidValRes.isValid, false);
+
+const invalidCheckLoad = getExpenses(invalidAttemptStorage);
+assert.strictEqual(invalidCheckLoad.data.length, 2, 'Existing data remains untouched on invalid backup');
+console.log('  ✓ 8.11: Existing data remains unchanged when backup validation fails.');
+
+// Scenario 8.12: Storage write failure is handled safely with rollback without reporting false success
+const storageWriteFailMock = createMockStorage(sampleRecords, false, true); // Save fails on setItem
+const failedRestoreRes = restoreBackup(validValidationRes.data, storageWriteFailMock, () => true);
+assert.strictEqual(failedRestoreRes.success, false);
+assert.ok(failedRestoreRes.error.includes('Hindi ma-save ang bagong backup'));
+console.log('  ✓ 8.12: Storage write failure is handled safely without reporting false success.');
 
 console.log('\n======================================================');
 console.log('ALL 8 TEST SUITES PASSED SUCCESSFULLY (0 FAILURES)! 🎉');

@@ -5,6 +5,8 @@
 
 const STORAGE_KEY = 'raymar_expenses_v1';
 const APPROVED_CATEGORIES = ['Utilities', 'Supplies', 'Rent', 'Payroll', 'Marketing', 'Others'];
+const SUPPORTED_BACKUP_VERSION = '1.0';
+const APP_NAME_IDENTIFIER = 'Ray Mar Apps Business Expense Tracker';
 
 // Format currency in Philippine Peso (₱)
 function formatPHP(amount) {
@@ -190,24 +192,41 @@ function escapeHTML(str) {
 // --- PHASE 1: JSON BACKUP & RESTORE HELPERS ---
 
 // Validate imported JSON data structure and every expense record inside
+// Rejects raw arrays and requires versioned envelope object with format identifier & version
 function validateBackupData(parsedData) {
-  if (!parsedData) {
-    return { isValid: false, error: 'Ang backup file ay blangko (File is empty).' };
+  if (!parsedData || typeof parsedData !== 'object') {
+    return { isValid: false, error: 'Ang backup document ay hindi valid JSON object.' };
   }
 
-  let records = parsedData;
-  // Support both raw array and metadata container object { version: 1, expenses: [...] }
-  if (!Array.isArray(parsedData) && typeof parsedData === 'object' && Array.isArray(parsedData.expenses)) {
-    records = parsedData.expenses;
+  if (Array.isArray(parsedData)) {
+    return { isValid: false, error: 'Hindi tinatanggap ang raw array backup. Kailangan ng versioned backup envelope document.' };
   }
 
-  if (!Array.isArray(records)) {
-    return { isValid: false, error: 'Hindi valid na backup format (Backup must be an array or valid backup object).' };
+  const { appName, version, exportDate, totalRecords, expenses } = parsedData;
+
+  if (appName !== APP_NAME_IDENTIFIER) {
+    return { isValid: false, error: 'Hindi kilalang backup format identifier (Invalid app name).' };
+  }
+
+  if (version !== SUPPORTED_BACKUP_VERSION) {
+    return { isValid: false, error: `Hindi suportadong backup version: ${version || 'unknown'}. Suportado lamang ang v${SUPPORTED_BACKUP_VERSION}.` };
+  }
+
+  if (!exportDate || typeof exportDate !== 'string' || isNaN(Date.parse(exportDate))) {
+    return { isValid: false, error: 'Maling export timestamp sa backup document.' };
+  }
+
+  if (!Array.isArray(expenses)) {
+    return { isValid: false, error: 'Ang expenses property sa backup ay dapat isang array.' };
+  }
+
+  if (typeof totalRecords === 'number' && totalRecords !== expenses.length) {
+    return { isValid: false, error: 'Maling totalRecords count kumpara sa aktwal na dami ng expenses.' };
   }
 
   const validRecords = [];
-  for (let i = 0; i < records.length; i++) {
-    const item = records[i];
+  for (let i = 0; i < expenses.length; i++) {
+    const item = expenses[i];
     if (!item || typeof item !== 'object') {
       return { isValid: false, error: `Ang record #${i + 1} ay hindi valid object.` };
     }
@@ -242,13 +261,55 @@ function validateBackupData(parsedData) {
 // Generate formatted JSON string for backup export
 function generateBackupJSON(expenses) {
   const exportPayload = {
-    appName: 'Ray Mar Apps Business Expense Tracker',
-    version: '1.0',
+    appName: APP_NAME_IDENTIFIER,
+    version: SUPPORTED_BACKUP_VERSION,
     exportDate: new Date().toISOString(),
     totalRecords: Array.isArray(expenses) ? expenses.length : 0,
     expenses: Array.isArray(expenses) ? expenses : []
   };
   return JSON.stringify(exportPayload, null, 2);
+}
+
+// Safe Restore Execution Helper with Rollback Capability
+function restoreBackup(validatedRecords, customStorage, confirmFn = (typeof window !== 'undefined' && window.confirm) ? window.confirm.bind(window) : () => true) {
+  const currentLoad = getExpenses(customStorage);
+  if (!currentLoad.success) {
+    return {
+      success: false,
+      error: 'Hindi ma-load ang kasalukuyang data bago mag-restore. Inihinto ang restore upang protektahan ang data.'
+    };
+  }
+
+  const existingData = currentLoad.data || [];
+  const confirmMsg = `Sigurado ka bang gusto mong palitan ang ${existingData.length} kasalukuyang records gamit ang ${validatedRecords.length} records mula sa backup?`;
+
+  if (!confirmFn(confirmMsg)) {
+    return {
+      cancelled: true,
+      message: 'Kanselado ang restore. Ang iyong mga kasalukuyang records ay hindi nabago.'
+    };
+  }
+
+  const saveRes = saveExpenses(validatedRecords, customStorage);
+  if (!saveRes.success) {
+    // Attempt rollback
+    const rollbackRes = saveExpenses(existingData, customStorage);
+    if (!rollbackRes.success) {
+      return {
+        success: false,
+        error: `Hindi ma-save ang bagong backup (${saveRes.error}) at nagka-error sa rollback (${rollbackRes.error}).`
+      };
+    }
+    return {
+      success: false,
+      error: `Hindi ma-save ang bagong backup: ${saveRes.error}. Matagumpay na na-rollback ang iyong dating records.`
+    };
+  }
+
+  return {
+    success: true,
+    restoredCount: validatedRecords.length
+  };
 }
 
 // UI Controller (Only runs in browser DOM environment)
@@ -401,7 +462,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         const expenses = loadRes.data || [];
         if (expenses.length === 0) {
-          showBackupStatus('Walang ire-record na gastos para i-export (No records to export).');
+          // Empty lists are allowed to export as valid empty backup document
+          const jsonString = generateBackupJSON([]);
+          const blob = new Blob([jsonString], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `raymar_expenses_backup_${getLocalDateString()}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+
+          showBackupStatus('Matagumpay na na-export ang blangkong backup (0 records)!', true);
           return;
         }
 
@@ -447,21 +520,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               return;
             }
 
-            const currentLoad = getExpenses();
-            const currentCount = (currentLoad.success && currentLoad.data) ? currentLoad.data.length : 0;
-            const confirmMsg = `Sigurado ka bang gusto mong palitan ang ${currentCount} kasalukuyang records gamit ang ${validatedRecords.length} records mula sa backup?`;
+            const restoreRes = restoreBackup(validatedRecords, undefined, window.confirm ? window.confirm.bind(window) : () => true);
 
-            if (confirm(confirmMsg)) {
-              const saveRes = saveExpenses(validatedRecords);
-              if (!saveRes.success) {
-                showBackupStatus(`Hindi ma-save ang na-import na backup: ${saveRes.error}`);
-                importBackupInput.value = '';
-                return;
-              }
-
-              showBackupStatus(`Matagumpay na na-restore ang ${validatedRecords.length} records!`, true);
-              renderUI();
+            if (restoreRes.cancelled) {
+              showBackupStatus(restoreRes.message);
+              importBackupInput.value = '';
+              return;
             }
+
+            if (!restoreRes.success) {
+              showBackupStatus(restoreRes.error);
+              importBackupInput.value = '';
+              return;
+            }
+
+            showBackupStatus(`Matagumpay na na-restore ang ${restoreRes.restoredCount} records!`, true);
+            renderUI();
           } catch (err) {
             console.error('Error during backup import:', err);
             showBackupStatus('Nagka-error sa pag-process ng backup file.');
@@ -573,6 +647,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     APPROVED_CATEGORIES,
+    SUPPORTED_BACKUP_VERSION,
+    APP_NAME_IDENTIFIER,
     formatPHP,
     getLocalDateString,
     getExpenses,
@@ -584,6 +660,7 @@ if (typeof module !== 'undefined' && module.exports) {
     filterExpensesList,
     escapeHTML,
     validateBackupData,
-    generateBackupJSON
+    generateBackupJSON,
+    restoreBackup
   };
 }
