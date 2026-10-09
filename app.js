@@ -26,10 +26,14 @@ function getLocalDateString(d = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
-// Load expenses from localStorage and strictly ensure Array type
-function getExpenses(storage = typeof localStorage !== 'undefined' ? localStorage : null) {
-  if (!storage) return { success: true, data: [] };
+// Load expenses from storage safely
+// Avoid resolving `localStorage` in default parameter where a getter error could occur before try/catch
+function getExpenses(customStorage) {
   try {
+    const storage = customStorage !== undefined ? customStorage : (typeof localStorage !== 'undefined' ? localStorage : null);
+    if (!storage) {
+      return { success: true, data: [] };
+    }
     const rawData = storage.getItem(STORAGE_KEY);
     if (rawData === null || rawData === undefined) {
       return { success: true, data: [] };
@@ -45,24 +49,27 @@ function getExpenses(storage = typeof localStorage !== 'undefined' ? localStorag
     }
     return { success: true, data: parsed };
   } catch (e) {
-    console.error('Failed to parse expenses from localStorage:', e);
+    console.error('Failed to parse/access expenses from localStorage:', e);
     return {
       success: false,
       data: [],
-      error: 'Hindi mabasa ang nakagawiang data sa storage (Malformed JSON).'
+      error: 'Hindi ma-access o mabasa ang data sa storage (Storage access error or malformed JSON).'
     };
   }
 }
 
-// Save expenses to localStorage
-function saveExpenses(expenses, storage = typeof localStorage !== 'undefined' ? localStorage : null) {
-  if (!storage) return { success: false, error: 'Walang available na localStorage.' };
+// Save expenses to storage safely
+function saveExpenses(expenses, customStorage) {
   try {
+    const storage = customStorage !== undefined ? customStorage : (typeof localStorage !== 'undefined' ? localStorage : null);
+    if (!storage) {
+      return { success: false, error: 'Walang available na localStorage.' };
+    }
     storage.setItem(STORAGE_KEY, JSON.stringify(expenses));
     return { success: true };
   } catch (e) {
     console.error('Failed to save expenses to localStorage:', e);
-    return { success: false, error: 'Hindi ma-save ang data sa storage (Storage error or Quota exceeded).' };
+    return { success: false, error: 'Hindi ma-save ang data sa storage (Storage access error or quota exceeded).' };
   }
 }
 
@@ -235,7 +242,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       const loadRes = getExpenses();
       if (!loadRes.success) {
         showStorageError(loadRes.error || 'Hindi mabasa ang saved expenses.');
+
+        // Clear dashboard totals and present error state rather than false ₱0.00 / 0 records
+        if (totalExpensesEl) totalExpensesEl.textContent = 'Error';
+        if (categoryTotalsEl) categoryTotalsEl.innerHTML = '<div class="error-msg">Unable to load categories</div>';
+        if (expenseCountEl) expenseCountEl.textContent = 'Error loading data';
+        if (emptyStateEl) {
+          emptyStateEl.textContent = 'Hindi ma-load ang talaan ng gastos dahil sa storage error.';
+          emptyStateEl.style.display = 'block';
+        }
+        if (expenseListEl) expenseListEl.innerHTML = '';
+        return;
       }
+
       const expenses = loadRes.data || [];
       const filtered = filterExpensesList(expenses, searchInput ? searchInput.value : '', filterCategory ? filterCategory.value : 'ALL');
       const { total, categories } = calculateTotals(expenses);
@@ -263,6 +282,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (expenseListEl && emptyStateEl) {
         expenseListEl.innerHTML = '';
         if (filtered.length === 0) {
+          emptyStateEl.textContent = 'No expenses recorded yet.';
           emptyStateEl.style.display = 'block';
         } else {
           emptyStateEl.style.display = 'none';

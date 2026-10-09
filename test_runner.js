@@ -73,8 +73,8 @@ assert.strictEqual(unapprovedRes.isValid, false);
 assert.ok(unapprovedRes.errors.category, 'Unapproved category must return error');
 console.log('✓ Passed: Only approved categories are accepted.');
 
-// Test 4: LocalStorage Hardening (Non-Array JSON, Malformed JSON, Empty Storage, Storage Errors)
-console.log('\nTest 4: Storage Hardening & Error Handling');
+// Test 4: LocalStorage Hardening & Exception Security
+console.log('\nTest 4: Storage Hardening & Access Exception Handling');
 
 // 4a. Empty Storage
 const emptyStorage = createMockStorage(null);
@@ -104,7 +104,7 @@ assert.strictEqual(nullJSONLoad.success, false);
 const malformedStorage = createMockStorage('{ bad json syntax: ');
 const malformedLoad = getExpenses(malformedStorage);
 assert.strictEqual(malformedLoad.success, false);
-assert.ok(malformedLoad.error.includes('Malformed JSON'));
+assert.ok(malformedLoad.error.includes('Storage access error or malformed JSON'));
 
 // 4d. Storage Read / Write Exceptions
 const failingWriteStorage = createMockStorage(null, false, true);
@@ -117,7 +117,24 @@ const loadFailResult = getExpenses(failingReadStorage);
 assert.strictEqual(loadFailResult.success, false);
 assert.ok(loadFailResult.error, 'Should contain error message when read fails');
 
-console.log('✓ Passed: Storage rejects non-array JSON (object, string, number, null), malformed JSON, and exception errors.');
+// 4e. Storage Object Getter Exception Simulation (SecurityError when accessing localStorage object itself)
+const throwingGetterStorage = {
+  get getItem() {
+    throw new Error('SecurityError: Access to localStorage is denied');
+  },
+  get setItem() {
+    throw new Error('SecurityError: Access to localStorage is denied');
+  }
+};
+const loadGetterFail = getExpenses(throwingGetterStorage);
+assert.strictEqual(loadGetterFail.success, false);
+assert.ok(loadGetterFail.error.includes('Storage access error'));
+
+const saveGetterFail = saveExpenses([{ id: '1', amount: 100 }], throwingGetterStorage);
+assert.strictEqual(saveGetterFail.success, false);
+assert.ok(saveGetterFail.error.includes('Storage access error'));
+
+console.log('✓ Passed: Storage safely handles getter access exceptions, non-array JSON, malformed JSON, and read/write failures.');
 
 // Test 5: Local Date Formatting
 console.log('\nTest 5: Local Date Formatting');
@@ -131,7 +148,7 @@ assert.strictEqual(escapeHTML('<script>alert("xss")</script>'), '&lt;script&gt;a
 assert.strictEqual(escapeHTML("Merchant's Store & Shop"), 'Merchant&#39;s Store &amp; Shop');
 console.log('✓ Passed: HTML special characters are escaped safely.');
 
-// Test 7: Currency Formatting & Totals Calculation Safeguards
+// Test 7: Currency Formatting & Calculation Safeguards
 console.log('\nTest 7: Currency Formatting & Calculation Safeguards');
 assert.strictEqual(formatPHP(1250.5), '₱1,250.50');
 assert.strictEqual(formatPHP('invalid'), '₱0.00');
@@ -149,7 +166,16 @@ assert.strictEqual(totals.total, 1700, 'Invalid, negative, non-object items shou
 assert.strictEqual(totals.categories.Utilities, 1000);
 assert.strictEqual(totals.categories.Supplies, 500);
 assert.strictEqual(totals.categories.Others, 200, 'Unknown categories accumulate under Others');
-console.log('✓ Passed: Totals calculation ignores non-object items and safely categorizes legacy/unknown inputs.');
+
+const filtered = filterExpensesList([
+  { merchant: 'Meralco', category: 'Utilities' },
+  null,
+  'invalid_entry',
+  { merchant: 'Office Warehouse', category: 'Supplies' }
+], '', 'ALL');
+assert.strictEqual(filtered.length, 2, 'Filtering ignores non-object items cleanly');
+
+console.log('✓ Passed: Totals calculation and filtering ignore non-object items and safely categorize legacy/unknown inputs.');
 
 console.log('\n======================================================');
 console.log('ALL 7 TEST SUITES PASSED SUCCESSFULLY (0 FAILURES)! 🎉');
