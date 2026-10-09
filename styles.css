@@ -32,6 +32,20 @@ body {
   padding: 0 1rem;
 }
 
+/* Alert box */
+.alert {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.alert-danger {
+  background-color: #f8d7da;
+  color: #842029;
+  border: 1px solid #f5c2c7;
+}
+
 /* Header */
 .app-header {
   background-color: var(--primary);

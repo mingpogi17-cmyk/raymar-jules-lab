@@ -4,54 +4,101 @@
  */
 
 const STORAGE_KEY = 'raymar_expenses_v1';
+const APPROVED_CATEGORIES = ['Utilities', 'Supplies', 'Rent', 'Payroll', 'Marketing', 'Others'];
 
 // Format currency in Philippine Peso (₱)
 function formatPHP(amount) {
-  const num = parseFloat(amount) || 0;
+  const num = Number(amount);
+  if (isNaN(num) || !isFinite(num)) {
+    return '₱0.00';
+  }
   return '₱' + num.toLocaleString('en-PH', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   });
 }
 
+// Get user's local date string formatted as YYYY-MM-DD
+function getLocalDateString(d = new Date()) {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 // Load expenses from localStorage
-function getExpenses() {
+function getExpenses(storage = typeof localStorage !== 'undefined' ? localStorage : null) {
+  if (!storage) return { success: true, data: [] };
   try {
-    const data = localStorage.getItem(STORAGE_KEY);
-    return data ? JSON.parse(data) : [];
+    const data = storage.getItem(STORAGE_KEY);
+    return { success: true, data: data ? JSON.parse(data) : [] };
   } catch (e) {
     console.error('Failed to parse expenses from localStorage:', e);
-    return [];
+    return { success: false, data: [], error: 'Hindi mabasa ang nakagawiang data sa storage.' };
   }
 }
 
 // Save expenses to localStorage
-function saveExpenses(expenses) {
+function saveExpenses(expenses, storage = typeof localStorage !== 'undefined' ? localStorage : null) {
+  if (!storage) return { success: false, error: 'Walang available na localStorage.' };
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(expenses));
+    storage.setItem(STORAGE_KEY, JSON.stringify(expenses));
+    return { success: true };
   } catch (e) {
     console.error('Failed to save expenses to localStorage:', e);
+    return { success: false, error: 'Hindi ma-save ang data sa storage (Storage error or Quota exceeded).' };
   }
+}
+
+// Strict Date Validation (YYYY-MM-DD and real date check)
+function isValidYYYYMMDD(dateStr) {
+  if (typeof dateStr !== 'string') return false;
+  const regex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!regex.test(dateStr)) return false;
+
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const dateObj = new Date(year, month - 1, day);
+  return (
+    dateObj.getFullYear() === year &&
+    dateObj.getMonth() === month - 1 &&
+    dateObj.getDate() === day
+  );
+}
+
+// Strict Numeric Validation (Rejects "100abc", NaN, Infinity, <= 0)
+function isValidAmount(amountInput) {
+  if (typeof amountInput === 'number') {
+    return !isNaN(amountInput) && isFinite(amountInput) && amountInput > 0;
+  }
+  if (typeof amountInput !== 'string') return false;
+
+  const trimmed = amountInput.trim();
+  if (trimmed === '') return false;
+
+  // Ensure the string contains purely numeric characters (optional single decimal point)
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return false;
+
+  const num = Number(trimmed);
+  return !isNaN(num) && isFinite(num) && num > 0;
 }
 
 // Validation logic
 function validateExpenseInput({ date, amount, category, merchant }) {
   const errors = {};
 
-  if (!date || date.trim() === '') {
-    errors.date = 'Petsa ay kinakailangan (Date is required).';
+  if (!date || typeof date !== 'string' || !isValidYYYYMMDD(date.trim())) {
+    errors.date = 'Valid date (YYYY-MM-DD) ay kinakailangan (Valid date required).';
   }
 
-  const numericAmount = parseFloat(amount);
-  if (isNaN(numericAmount) || numericAmount <= 0) {
-    errors.amount = 'Ang halaga ay dapat mas mataas sa ₱0.00 (Amount must be > 0).';
+  if (!isValidAmount(amount)) {
+    errors.amount = 'Ang halaga ay dapat mas mataas sa ₱0.00 at totoong numero (Valid amount > 0 required).';
   }
 
-  if (!category || category.trim() === '') {
-    errors.category = 'Pumili ng kategorya (Select a category).';
+  if (!category || typeof category !== 'string' || !APPROVED_CATEGORIES.includes(category.trim())) {
+    errors.category = 'Pumili ng kategorya sa approved list (Select a valid category).';
   }
 
-  if (!merchant || merchant.trim().length < 2) {
+  if (!merchant || typeof merchant !== 'string' || merchant.trim().length < 2) {
     errors.merchant = 'Ilagay ang merchant/payee (At least 2 characters).';
   }
 
@@ -61,7 +108,7 @@ function validateExpenseInput({ date, amount, category, merchant }) {
   };
 }
 
-// Calculate totals
+// Calculate totals safely
 function calculateTotals(expenses) {
   let total = 0;
   const categories = {
@@ -73,30 +120,46 @@ function calculateTotals(expenses) {
     Others: 0
   };
 
-  expenses.forEach(item => {
-    const amt = parseFloat(item.amount) || 0;
-    total += amt;
-    if (categories.hasOwnProperty(item.category)) {
-      categories[item.category] += amt;
-    } else {
-      categories.Others = (categories.Others || 0) + amt;
-    }
-  });
+  if (Array.isArray(expenses)) {
+    expenses.forEach(item => {
+      const amt = Number(item.amount);
+      if (!isNaN(amt) && isFinite(amt) && amt > 0) {
+        total += amt;
+        if (categories.hasOwnProperty(item.category)) {
+          categories[item.category] += amt;
+        } else {
+          categories.Others += amt;
+        }
+      }
+    });
+  }
 
   return { total, categories };
 }
 
 // Filter expenses logic
 function filterExpensesList(expenses, searchKeyword, categoryFilter) {
+  if (!Array.isArray(expenses)) return [];
+  const safeKeyword = (searchKeyword || '').toString().toLowerCase().trim();
+  const safeCategory = (categoryFilter || 'ALL').toString();
+
   return expenses.filter(item => {
-    const matchesCategory = categoryFilter === 'ALL' || item.category === categoryFilter;
-    const query = searchKeyword.toLowerCase().trim();
-    const matchesSearch = query === '' ||
-      item.merchant.toLowerCase().includes(query) ||
-      (item.description && item.description.toLowerCase().includes(query));
+    if (!item || typeof item !== 'object') return false;
+    const matchesCategory = safeCategory === 'ALL' || item.category === safeCategory;
+    const merchantStr = (item.merchant || '').toString().toLowerCase();
+    const descStr = (item.description || '').toString().toLowerCase();
+    const matchesSearch = safeKeyword === '' || merchantStr.includes(safeKeyword) || descStr.includes(safeKeyword);
 
     return matchesCategory && matchesSearch;
   });
+}
+
+// Escape HTML helper
+function escapeHTML(str) {
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/[&<>'"]/g,
+    tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
+  );
 }
 
 // UI Controller (Only runs in browser DOM environment)
@@ -113,6 +176,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const amountError = document.getElementById('amountError');
     const categoryError = document.getElementById('categoryError');
     const merchantError = document.getElementById('merchantError');
+    const storageAlert = document.getElementById('storageAlert');
 
     const totalExpensesEl = document.getElementById('totalExpenses');
     const categoryTotalsEl = document.getElementById('categoryTotals');
@@ -123,127 +187,167 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const searchInput = document.getElementById('searchInput');
     const filterCategory = document.getElementById('filterCategory');
 
-    // Set default date to today
-    const today = new Date().toISOString().split('T')[0];
-    expenseDate.value = today;
+    // Set default date to user's local date
+    expenseDate.value = getLocalDateString();
 
     function clearErrors() {
-      dateError.textContent = '';
-      amountError.textContent = '';
-      categoryError.textContent = '';
-      merchantError.textContent = '';
+      if (dateError) dateError.textContent = '';
+      if (amountError) amountError.textContent = '';
+      if (categoryError) categoryError.textContent = '';
+      if (merchantError) merchantError.textContent = '';
+      if (storageAlert) {
+        storageAlert.textContent = '';
+        storageAlert.style.display = 'none';
+      }
+    }
+
+    function showStorageError(message) {
+      if (storageAlert) {
+        storageAlert.textContent = message;
+        storageAlert.style.display = 'block';
+      } else {
+        alert(message);
+      }
     }
 
     function renderUI() {
-      const expenses = getExpenses();
-      const filtered = filterExpensesList(expenses, searchInput.value, filterCategory.value);
+      const loadRes = getExpenses();
+      if (!loadRes.success) {
+        showStorageError(loadRes.error || 'Hindi mabasa ang saved expenses.');
+      }
+      const expenses = loadRes.data || [];
+      const filtered = filterExpensesList(expenses, searchInput ? searchInput.value : '', filterCategory ? filterCategory.value : 'ALL');
       const { total, categories } = calculateTotals(expenses);
 
       // Render Dashboard Total
-      totalExpensesEl.textContent = formatPHP(total);
+      if (totalExpensesEl) totalExpensesEl.textContent = formatPHP(total);
 
       // Render Category Totals Grid
-      categoryTotalsEl.innerHTML = '';
-      Object.keys(categories).forEach(cat => {
-        const catDiv = document.createElement('div');
-        catDiv.className = 'cat-item';
-        catDiv.innerHTML = `<span>${cat}</span> <strong>${formatPHP(categories[cat])}</strong>`;
-        categoryTotalsEl.appendChild(catDiv);
-      });
-
-      // Render Count
-      expenseCountEl.textContent = `${filtered.length} record${filtered.length === 1 ? '' : 's'}`;
-
-      // Render List
-      expenseListEl.innerHTML = '';
-      if (filtered.length === 0) {
-        emptyStateEl.style.display = 'block';
-      } else {
-        emptyStateEl.style.display = 'none';
-        filtered.forEach(item => {
-          const li = document.createElement('li');
-          li.className = 'expense-item';
-          li.innerHTML = `
-            <div class="expense-details">
-              <span class="expense-title">${escapeHTML(item.merchant)}</span>
-              <span class="expense-meta">${item.date} • <strong class="text-primary">${escapeHTML(item.category)}</strong>${item.description ? ' • ' + escapeHTML(item.description) : ''}</span>
-            </div>
-            <div class="expense-right">
-              <span class="expense-amount-tag">${formatPHP(item.amount)}</span>
-              <button class="btn btn-delete" data-id="${item.id}" aria-label="Delete expense">Delete</button>
-            </div>
-          `;
-          expenseListEl.appendChild(li);
+      if (categoryTotalsEl) {
+        categoryTotalsEl.innerHTML = '';
+        Object.keys(categories).forEach(cat => {
+          const catDiv = document.createElement('div');
+          catDiv.className = 'cat-item';
+          catDiv.innerHTML = `<span>${escapeHTML(cat)}</span> <strong>${formatPHP(categories[cat])}</strong>`;
+          categoryTotalsEl.appendChild(catDiv);
         });
       }
-    }
 
-    function escapeHTML(str) {
-      if (!str) return '';
-      return str.replace(/[&<>'"]/g,
-        tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
-      );
+      // Render Count
+      if (expenseCountEl) {
+        expenseCountEl.textContent = `${filtered.length} record${filtered.length === 1 ? '' : 's'}`;
+      }
+
+      // Render List
+      if (expenseListEl && emptyStateEl) {
+        expenseListEl.innerHTML = '';
+        if (filtered.length === 0) {
+          emptyStateEl.style.display = 'block';
+        } else {
+          emptyStateEl.style.display = 'none';
+          filtered.forEach(item => {
+            const li = document.createElement('li');
+            li.className = 'expense-item';
+            li.innerHTML = `
+              <div class="expense-details">
+                <span class="expense-title">${escapeHTML(item.merchant)}</span>
+                <span class="expense-meta">${escapeHTML(item.date)} • <strong class="text-primary">${escapeHTML(item.category)}</strong>${item.description ? ' • ' + escapeHTML(item.description) : ''}</span>
+              </div>
+              <div class="expense-right">
+                <span class="expense-amount-tag">${formatPHP(item.amount)}</span>
+                <button class="btn btn-delete" data-id="${escapeHTML(item.id)}" aria-label="Delete expense">Delete</button>
+              </div>
+            `;
+            expenseListEl.appendChild(li);
+          });
+        }
+      }
     }
 
     // Form submit event
-    expenseForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      clearErrors();
+    if (expenseForm) {
+      expenseForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        clearErrors();
 
-      const inputData = {
-        date: expenseDate.value,
-        amount: expenseAmount.value,
-        category: expenseCategory.value,
-        merchant: expenseMerchant.value,
-        description: expenseDescription.value
-      };
+        const inputData = {
+          date: expenseDate ? expenseDate.value : '',
+          amount: expenseAmount ? expenseAmount.value : '',
+          category: expenseCategory ? expenseCategory.value : '',
+          merchant: expenseMerchant ? expenseMerchant.value : '',
+          description: expenseDescription ? expenseDescription.value : ''
+        };
 
-      const { isValid, errors } = validateExpenseInput(inputData);
+        const { isValid, errors } = validateExpenseInput(inputData);
 
-      if (!isValid) {
-        if (errors.date) dateError.textContent = errors.date;
-        if (errors.amount) amountError.textContent = errors.amount;
-        if (errors.category) categoryError.textContent = errors.category;
-        if (errors.merchant) merchantError.textContent = errors.merchant;
-        return;
-      }
+        if (!isValid) {
+          if (errors.date && dateError) dateError.textContent = errors.date;
+          if (errors.amount && amountError) amountError.textContent = errors.amount;
+          if (errors.category && categoryError) categoryError.textContent = errors.category;
+          if (errors.merchant && merchantError) merchantError.textContent = errors.merchant;
+          return;
+        }
 
-      const newExpense = {
-        id: 'exp_' + Date.now(),
-        date: inputData.date,
-        amount: parseFloat(inputData.amount),
-        category: inputData.category,
-        merchant: inputData.merchant,
-        description: inputData.description
-      };
+        const newExpense = {
+          id: 'exp_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+          date: inputData.date.trim(),
+          amount: Number(inputData.amount.trim()),
+          category: inputData.category.trim(),
+          merchant: inputData.merchant.trim(),
+          description: inputData.description ? inputData.description.trim() : ''
+        };
 
-      const expenses = getExpenses();
-      expenses.unshift(newExpense);
-      saveExpenses(expenses);
+        const loadRes = getExpenses();
+        if (!loadRes.success) {
+          showStorageError('Hindi ma-load ang kasalukuyang data. Hindi na-save ang bagong gastos.');
+          return;
+        }
 
-      // Reset Form fields except date
-      expenseAmount.value = '';
-      expenseCategory.value = '';
-      expenseMerchant.value = '';
-      expenseDescription.value = '';
+        const expenses = loadRes.data;
+        expenses.unshift(newExpense);
 
-      renderUI();
-    });
+        const saveRes = saveExpenses(expenses);
+        if (!saveRes.success) {
+          showStorageError(saveRes.error || 'Nagka-error sa pag-save sa localStorage. Hindi na-save ang gastos.');
+          return;
+        }
+
+        // Reset Form fields except date
+        if (expenseAmount) expenseAmount.value = '';
+        if (expenseCategory) expenseCategory.value = '';
+        if (expenseMerchant) expenseMerchant.value = '';
+        if (expenseDescription) expenseDescription.value = '';
+
+        renderUI();
+      });
+    }
 
     // Delete expense event delegation
-    expenseListEl.addEventListener('click', (e) => {
-      if (e.target.classList.contains('btn-delete')) {
-        const idToDelete = e.target.getAttribute('data-id');
-        let expenses = getExpenses();
-        expenses = expenses.filter(item => item.id !== idToDelete);
-        saveExpenses(expenses);
-        renderUI();
-      }
-    });
+    if (expenseListEl) {
+      expenseListEl.addEventListener('click', (e) => {
+        if (e.target.classList.contains('btn-delete')) {
+          const idToDelete = e.target.getAttribute('data-id');
+          const loadRes = getExpenses();
+          if (!loadRes.success) {
+            showStorageError('Hindi ma-access ang storage para mag-delete.');
+            return;
+          }
+          let expenses = loadRes.data;
+          expenses = expenses.filter(item => item.id !== idToDelete);
+
+          const saveRes = saveExpenses(expenses);
+          if (!saveRes.success) {
+            showStorageError('Hindi na-save ang pag-delete sa localStorage.');
+            return;
+          }
+          renderUI();
+        }
+      });
+    }
 
     // Filter event listeners
-    searchInput.addEventListener('input', renderUI);
-    filterCategory.addEventListener('change', renderUI);
+    if (searchInput) searchInput.addEventListener('input', renderUI);
+    if (filterCategory) filterCategory.addEventListener('change', renderUI);
 
     // Initial render
     renderUI();
@@ -253,9 +357,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 // Export for Node testing environment
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    APPROVED_CATEGORIES,
     formatPHP,
+    getLocalDateString,
+    getExpenses,
+    saveExpenses,
+    isValidYYYYMMDD,
+    isValidAmount,
     validateExpenseInput,
     calculateTotals,
-    filterExpensesList
+    filterExpensesList,
+    escapeHTML
   };
 }
